@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EHNav
 // @namespace    https://e-hentai.org/
-// @version      0.0.1
+// @version      0.0.2
 // @description  keyboard navigation for E-Hentai
 // @author       You
 // @match        https://e-hentai.org/*
@@ -43,6 +43,7 @@ body.theme-eh {
   --foreground-subtitle: #9F8687;
   --border-radius: 9px;
   --image-filter: none;
+  --active-tag: blue;
 }
 
 body.theme-ex {
@@ -66,6 +67,7 @@ body.theme-ex {
   --foreground-subtitle: #B8B8B8;
   --border-radius: 0;
   --image-filter: grayscale(1) brightness(8);
+  --active-tag: blue;
 }
 
 body, div.gm, a,
@@ -165,29 +167,120 @@ img.ygm {
 
     let active = false,
         tagNav = false,
+        tagNavState,
         spotlightActive = false;
 
-    let actions, tagPos = [];
+    const activeTags = new Set();
+
+    function ontagclick(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const currentTag = e.target.id.slice(3);
+        if (activeTags.has(currentTag)) {
+            activeTags.delete(currentTag);
+        } else {
+            activeTags.add(currentTag);
+        }
+
+        if (activeTags.size === 1) {
+            const tag = activeTags.values().next().value;
+            /* global _refresh_tagmenu_act */
+            document.getElementById('tagmenu_new').style.display = 'none';
+            document.getElementById('tagmenu_act').style.display = null;
+            _refresh_tagmenu_act(tag, document.getElementById('ta_' + tag));
+            updateLabels();
+            if (tagNav) { showTagLabels(); } else { showLabels(); }
+        } else if (activeTags.size === 0) {
+            document.getElementById('tagmenu_new').style.display = null;
+            document.getElementById('tagmenu_act').style.display = 'none';
+        }
+
+        if (activeTags.has(currentTag)) {
+            e.target.style.color = 'var(--active-tag)';
+        } else {
+            e.target.style.color = null;
+        }
+    }
+
+    function hookTags() {
+        const tags = document.querySelectorAll('#taglist a');
+        for (const tag of tags) {
+            tag.addEventListener('click', ontagclick);
+            tag.removeAttribute('onclick');
+        }
+    }
+    hookTags();
+
+    function tag_show_galleries() {
+        document.location.href = 'https://e-hentai.org/?f_search=' + [...activeTags].map(tag => tag.replace(/:(.+)$/, ':"$1$$"')).join(' ').replace(/\s+/g, '+');
+    }
+    unsafeWindow.tag_show_galleries = tag_show_galleries;
+
+    /* globals token apiuid apikey gid wait_roller_set tag_update_vote tag_xhr:writable api_call api_response */
+    function send_vote2(b,a){
+        const sents = Array(b.length).fill(false);
+        wait_roller_set();
+        for (let i = 0; i < b.length; i++) {
+            const xhr = new XMLHttpRequest(),
+                c = {method:"taggallery",apiuid:apiuid,apikey:apikey,gid:gid,token:token,tags:b[i],vote:a};
+            /* eslint-disable no-loop-func */
+            ((i, xhr) => {
+                api_call(xhr, c, () => {
+                    sents[i] = true;
+                    if (sents.every(_=>_)) { tag_xhr = xhr; tag_update_vote(); hookTags(); updateLabels(); }
+                });
+            })(i, xhr);
+            /* eslint-enable no-loop-func */
+        }
+    }
+    unsafeWindow.send_vote2 = send_vote2;
+
+    function tag_vote_up() {
+        send_vote2([...activeTags], 1); activeTags.clear();
+    }
+    unsafeWindow.tag_vote_up = tag_vote_up;
+
+    function tag_vote_down() {
+        send_vote2([...activeTags], -1); activeTags.clear();
+    }
+    unsafeWindow.tag_vote_down = tag_vote_down;
+
+    let actions, tagActions, tagPos = [];
     function handleKey(e) {
+        if (e.ctrlKey && e.key === 'Enter') {
+            const selection = window.getSelection().toString();
+            if (selection) {
+                document.location.href = 'https://e-hentai.org/?f_search=' + selection.replace(/\s+/g, '+');
+                return;
+            }
+            const tagMenu = document.getElementById('tagmenu_act');
+            if (tagMenu.style.display !== null) {
+                /* global tag_show_galleries */
+                tag_show_galleries();
+                return;
+            }
+        }
         if (e.key === 'Escape') {
             active = !active;
             if (active) {
                 showLabels();
             } else {
                 hideLabels();
+                hideTagLabels();
             }
             return;
         }
         if (e.key === ' ' && e.ctrlKey && e.altKey) { e.preventDefault(); e.stopPropagation(); toggleSpotlight(); }
         if (!active) { return; }
-        if (tagNav) { return handleTagKey(e); }
-        if (e.key in actions && !e.ctrlKey && !e.altKey) {
+        if (tagNav) {
+            if (e.key === 'Enter') {
+                ontagclick({preventDefault: ()=>{}, stopPropagation: ()=>{}, target: tagArray[tagNavState.y][Math.min(tagArray[tagNavState.y].length - 1, tagNavState.x)].children[0] });
+            }
+            if (e.key in tagActions && !e.ctrlKey && !e.altKey) {
+                tagActions[e.key]();
+            }
+        } else if (e.key in actions && !e.ctrlKey && !e.altKey) {
             actions[e.key]();
-        }
-    }
-
-    function handleTagKey(e) {
-        switch (e.which) {
         }
     }
 
@@ -205,12 +298,22 @@ img.ygm {
         spotlightActive = !spotlightActive;
     }
 
+    function addTagBorder() {
+        tagArray[tagNavState.y][Math.min(tagArray[tagNavState.y].length - 1, tagNavState.x)].style.borderWidth = '2px';
+    }
+
+    function removeTagBorder() {
+        tagArray[tagNavState.y][Math.min(tagArray[tagNavState.y].length - 1, tagNavState.x)].style.borderWidth = null;
+    }
+
     document.body.addEventListener('keydown', handleKey);
 
     const navbar = document.getElementById('nb');
-    const tags = document.getElementById('taglist');
-    const galleryEdit = document.getElementById('gd5');
-    let labels = window.labels = !isEx ? [
+    const tags = document.getElementById('taglist') || document.createElement('div');
+    const tagMenu = document.getElementById('tagmenu_act') || document.createElement('div');
+    const tagArray = tags.id === 'taglist' ? [...tags.children[0].children[0].children].map(row => row.children[1].children) : [[]];
+    const galleryEdit = document.getElementById('gd5') || {children:Array(6).fill(document.createElement('div'))};
+    let labels = unsafeWindow.labels = !isEx ? [
         { name: 'Front Page', key: 'm', element: navbar.children[0] },
         { name: 'Watched', key: 'w', element: navbar.children[1] },
         { name: 'Popular', key: 'p', element: navbar.children[2] },
@@ -232,22 +335,76 @@ img.ygm {
         { name: 'Show Gallery Stats', key: 'S', element: galleryEdit.children[5], left: '0' },
         { name: 'Tags', key: 't', element: tags, action: () => {
             tagNav = !tagNav;
+            if (tagNav) {
+                tagNavState = {x:0, y:0};
+                addTagBorder();
+            } else {
+                removeTagBorder();
+            }
             hideLabels();
+            showTagLabels();
         } },
-    ] : [];
+    ] : [ /* TODO */ ];
+    let tagLabels = unsafeWindow.tagLabels = [
+        { name: 'Up', key: 'w', element: tags, left: '500px', top: '234px', action: () => {
+            if (tagNavState.y > 0) {
+                removeTagBorder();
+                tagNavState.y--;
+                addTagBorder();
+            }
+        } },
+        { name: 'Left', key: 'a', element: tags, left: '484px', top: '250px', action: () => {
+            if (tagNavState.x > 0) {
+                removeTagBorder();
+                tagNavState.x--;
+                addTagBorder();
+            }
+        } },
+        { name: 'Down', key: 's', element: tags, left: '500px', top: '250px', action: () => {
+            if (tagNavState.y < tagArray.length - 1) {
+                removeTagBorder();
+                tagNavState.y++;
+                addTagBorder();
+            }
+        } },
+        { name: 'Right', key: 'd', element: tags, left: '516px', top: '250px', action: () => {
+            if (tagNavState.x !== tagArray[tagNavState.y].length - 1) {
+                removeTagBorder();
+                tagNavState.x = Math.min(tagNavState.x + 1, tagArray[tagNavState.y].length - 1);
+                addTagBorder();
+            }
+        } },
+        { name: 'Vote Up', key: 'r', element: () => tagMenu.children[1], top: '-0.1em', left: '-1.3em' },
+        { name: 'Vote Down', key: 'f', element: () => tagMenu.children[3], top: '-0.1em', left: '-1.3em' },
+        { name: 'Show Tagged Galleries', key: 'q', element: () => tagMenu.children[5], top: '-0.1em', left: '-1.3em' },
+        { name: 'Show Tag Definition', key: 'e', element: () => tagMenu.children[7], top: '-0.1em', left: '-1.3em' },
+        { name: 'Add New Tag', key: 'g', element: () => tagMenu.children[9], top: '-0.1em', left: '-1.3em' },
+        { name: 'Tags', key: 't', element: tags, left: '500px', top: '200px', action: () => {
+            tagNav = !tagNav;
+            if (tagNav) {
+                tagNavState = {x:0, y:0};
+                addTagBorder();
+            } else {
+                removeTagBorder();
+            }
+            hideTagLabels();
+            showLabels();
+        } },
+    ];
     // TODO: albert style launcher
     // TODO: load config from localstorage
     // TODO: import/export config
 
     function updateLabels() {
-        for (const label of document.getElementsByClassName('ehp-label')) {
-            label.parent.removeChild(label);
+        for (const label of [...document.getElementsByClassName('ehp-label')]) {
+            label.parentElement.removeChild(label);
         }
         actions = {};
         for (const label of labels) {
-            actions[label.key] = label.action || (element => () => { element.click(); })(label.element.querySelector('a'));
-            if (label.element) {
-                label.element.style.position = 'relative';
+            const element = label.element && (label.element instanceof Node ? label.element : label.element()) || document.createElement('div');
+            actions[label.key] = label.action || (element => () => { element.click(); })(element.querySelector('a'));
+            if (element) {
+                element.style.position = 'relative';
             }
             const el = document.createElement('div');
             el.style.position = 'absolute';
@@ -270,7 +427,43 @@ img.ygm {
             if (label.top) { el.style.top = label.top; }
             if (label.left) { el.style.left = label.left; }
             el.innerText = label.key;
-            label.element.appendChild(el);
+            element.appendChild(el);
+        }
+
+
+
+        for (const label of [...document.getElementsByClassName('ehp-tag-label')]) {
+            label.parentElement.removeChild(label);
+        }
+        tagActions = {};
+        for (const label of tagLabels) {
+            const element = label.element && (label.element instanceof Node ? label.element : label.element()) || document.createElement('div');
+            tagActions[label.key] = label.action || (element => () => { element.click(); })(element.querySelector('a'));
+            if (element) {
+                element.style.position = 'relative';
+            }
+            const el = document.createElement('div');
+            el.style.position = 'absolute';
+            el.style.border = '1px solid var(--foreground)';
+            el.style.borderRadius = '2px';
+            el.style.top = '1px';
+            el.style.left = '-10px';
+            el.style.width = '1em';
+            el.style.lineHeight = '1em';
+            el.style.backgroundColor = 'var(--background)';
+            el.style.color = 'var(--foreground)';
+            el.style.textAlign = 'center';
+            el.style.fontWeight = 'bold';
+            el.style.display = 'none';
+            el.classList.add('ehp-tag-label');
+            if (label.action) {
+                el.style.top = 'calc(50% - 0.5em)';
+                el.style.left = 'calc(50% - 0.5em)';
+            }
+            if (label.top) { el.style.top = label.top; }
+            if (label.left) { el.style.left = label.left; }
+            el.innerText = label.key;
+            element.appendChild(el);
         }
     }
 
@@ -286,12 +479,27 @@ img.ygm {
         }
     }
 
-    function addLabel() {
+    function hideTagLabels() {
+        for (const label of document.getElementsByClassName('ehp-tag-label')) {
+            label.style.display = 'none';
+        }
     }
+
+    function showTagLabels() {
+        for (const label of document.getElementsByClassName('ehp-tag-label')) {
+            label.style.display = null;
+        }
+    }
+
+    function addLabel(label) {
+        labels.push(label);
+    }
+    unsafeWindow.addLabel = addLabel;
 
     function removeLabel(name) {
         labels = labels.filter(label => label.name !== name);
     }
+    unsafeWindow.removeLabel = removeLabel;
 
     updateLabels();
 })();
